@@ -1,6 +1,6 @@
 FROM python:3.7.7-slim-buster
 
-RUN groupadd -g gpstcp && useradd -r -g gpstcp gpstcp
+RUN groupadd -g 1000 gpstcp && useradd -u 1000 -g 1000 gpstcp
 
 WORKDIR /gps-tcp
 COPY ./* requirements.txt /gps-tcp/
