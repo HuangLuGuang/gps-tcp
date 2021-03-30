@@ -4,7 +4,7 @@ import logging
 class Config(object):
     DEBUG = None
 
-    LOG_LEVEL = logging.WARNING
+    LOG_LEVEL = logging.DEBUG
 
     LBS2GPS_INFO = {
         'url': 'http://api.cellocation.com:81/cell/',

@@ -10,7 +10,7 @@ https://medium.com/swlh/lets-write-a-chat-app-in-python-f6783a9ac170
 万位GPS定位器数据解析、存储
 """
 
-from socket import AF_INET, socket, SOCK_STREAM
+from socket import AF_INET, socket, SOCK_STREAM, SOL_SOCKET, SO_REUSEADDR
 from threading import Thread
 from datetime import datetime
 # import datetime
@@ -19,9 +19,8 @@ import os
 # import time
 import re
 import datetime as dt
-from gps import conf
+from gps import conf, setup_log
 import requests
-
 
 GT370_Lookup = conf.GT370_Lookup
 # 电量、电压字典
@@ -40,6 +39,9 @@ LBS2GPS_INFO = conf.LBS2GPS_INFO
 
 BAIDU_API_INFO = conf.BAIDU_API_INFO
 PLV8_API_INFO = conf.PLV8_API_INFO
+
+server_logger = setup_log('server.log')
+location_logger = setup_log('location.log')
 
 
 class CRC_GT370:
@@ -95,7 +97,6 @@ class CRC_GT370:
 crc_itu = CRC_GT370()
 
 
-
 def time_now_hex():
     """
     返回当前时间（UTC时间格式），6bits 16进制表示 20 06 11 22 16 41 -> 14060b161029(string)
@@ -148,7 +149,7 @@ def lbs2gps(mcc, mnc, lac, ci):
             print("基站定位数据失败：", resp)
             return {"lat": None, "lon": None, "address": None}
     except Exception as e:
-        print(e)
+        location_logger.error(e)
         return {"lat": None, "lon": None, "address": None}
 
 
@@ -162,7 +163,6 @@ def make_content_response(start, packet_len, protocol, message_id, crc_code, sto
     will be treated separately.
     """
     a = (start + packet_len + protocol + message_id + crc_code + stop)
-    # print("response", a)
 
     return a
 
@@ -171,9 +171,9 @@ def send_response(client, response):
     """
     Function to send a response packet to the client.
     """
-    LOGGER('info', 'server_log.txt', addresses[client]['address'][0], addresses[client]['imei'], 'OUT', response)
-    print("server to device -> data, type(data)", type(response), response)
 
+    server_logger.info("".join([addresses[client]['address'][0], '\t', addresses[client]['imei'], '\t',
+                       'OUT', '\t', str(response)]))
     client.send(bytes.fromhex(response))
 
 
@@ -192,7 +192,8 @@ def LOGGER(event, filename, ip, client, type, data):
     with open(os.path.join('./logs/', filename), 'a+') as log:
         if (event == 'info'):
             # TSV format of: Timestamp, Client IP, IN/OUT, Packet
-            logMessage = datetime.now().strftime('%Y/%m/%d %H:%M:%S') + '\t' + ip + '\t' + client + '\t' + type + '\t'.join(str(data)) + \
+            logMessage = datetime.now().strftime(
+                '%Y/%m/%d %H:%M:%S') + '\t' + ip + '\t' + client + '\t' + type + '\t'.join(str(data)) + \
                          '\n'
         # elif (event == 'location'):
         #     # TSV format of: Timestamp, Client IP, Location DateTime, GPS/LBS, Validity, Nb Sat, Latitude, Longitude, Accuracy, Speed, Heading
@@ -239,35 +240,37 @@ def handle_client(client):
             packet = client.recv(BUFSIZ)
             # 只接收非空数据包
             # packet: =====> b'xx\x11\x01\x08h\x12\x020B\t\x180 2\x02\x00\x05\x94(\r\n', x->ascii->120->0x78
-            print("initial packet：=====>", packet)
+            server_logger.info("initial packet：=====>{0}".format(str(packet)))
             if (len(packet) > 0):
-                print(datetime.now().strftime('%Y/%m/%d %H:%M:%S'), '[', addresses[client]['address'][0], ']', 'IN Hex :', packet.hex(),
-                      '(length in bytes =', len(packet), ')')
+                server_logger.info('[{0}], IN Hex{1} (length in bytes ={2})'
+                                   .format(addresses[client]['address'][0], str(packet.hex()), len(packet)))
+
                 # 分析接收的报文，处理报文，判断是否关闭线程
                 keepAlive = read_incoming_packet(client, packet)
 
-                print("keepAlive:", keepAlive)
-                LOGGER('info', 'server_log.txt', addresses[client]['address'][0], addresses[client]['imei'], 'IN', packet.hex())
+                server_logger.info("keepAlive:{0}".format(keepAlive))
+                server_logger.info("".join([addresses[client]['address'][0], '\t', addresses[client]['imei'], '\t',
+                                            'IN', '\t', str(packet.hex())]))
 
                 # Disconnect if client sent disconnect signal
                 if (keepAlive is False):
-                    print('[', addresses[client]['address'][0], ']', 'DISCONNECTED: socket was closed by client.')
+                    server_logger.info('[{0}]DISCONNECTED: socket was closed by client.'.format(addresses[client]['address'][0]))
                     client.close()
                     break
 
             # Close socket if recv() returns 0 bytes, i.e. connection has been closed
             else:
-                print('[', addresses[client]['address'][0], ']', 'DISCONNECTED: socket was closed for an unknown reason.')
+                server_logger.info('[{0}]DISCONNECTED: socket was closed for an unknown reason.'.format(addresses[client]['address'][0]))
                 client.close()
                 break
 
                 # Something went sideways... close the socket so that it does not hang
         except Exception as e:
-            print('[', addresses[client]['address'][0], ']', 'ERROR: socket was closed due to the following exception:')
-            print(e)
+            server_logger.error('[{0}]ERROR: socket was closed due to the following exception:'.format(addresses[client]['address'][0]))
+            server_logger.error(e)
             client.close()
             break
-    print("This thread is now closed.")
+    server_logger.info("This thread is now closed.")
 
 
 def read_incoming_packet(client, packet):
@@ -286,7 +289,8 @@ def read_incoming_packet(client, packet):
     # DEBUG: Print the role of current packet
     protocol_name = protocol_dict['protocol'][packet_list[1]]
     protocol_method = protocol_dict['response_method'][protocol_name]
-    print('The current packet is for protocol:', protocol_name, "protocol_code is :", packet_list[1], 'which has method:', protocol_method)
+    print('The current packet is for protocol:', protocol_name, "protocol_code is :", packet_list[1],
+          'which has method:', protocol_method)
     # Get the protocol name and react accordingly
 
     try:
@@ -325,11 +329,14 @@ def read_incoming_packet(client, packet):
         elif (protocol_name == 'status'):
             # Status can sometimes carry signal strength and sometimes not
             if (packet_list[0] == '06'):
-                print('[', addresses[client]['address'][0], ']', 'STATUS : Battery =', int(packet_list[2], base=16), '; Sw v. =',
+                print('[', addresses[client]['address'][0], ']', 'STATUS : Battery =', int(packet_list[2], base=16),
+                      '; Sw v. =',
                       int(packet_list[3], base=16), '; Status upload interval =', int(packet_list[4], base=16))
             elif (packet_list[0] == '07'):
-                print('[', addresses[client]['address'][0], ']', 'STATUS : Battery =', int(packet_list[2], base=16), '; Sw v. =',
-                      int(packet_list[3], base=16), '; Status upload interval =', int(packet_list[4], base=16), '; Signal strength =',
+                print('[', addresses[client]['address'][0], ']', 'STATUS : Battery =', int(packet_list[2], base=16),
+                      '; Sw v. =',
+                      int(packet_list[3], base=16), '; Status upload interval =', int(packet_list[4], base=16),
+                      '; Signal strength =',
                       int(packet_list[5], base=16))
             # Exit function without altering anything
             return (True)
@@ -338,13 +345,6 @@ def read_incoming_packet(client, packet):
             # Exit function returning False to break main while loop in handle_client()
             print('[', addresses[client]['address'][0], ']', 'STATUS : Sent hibernation packet. Disconnecting now.')
             return (False)
-
-        # elif (protocol_name == 'setup'):
-        #     # TODO: HANDLE NON-DEFAULT VALUES
-        #     r = answer_setup(packet_list, '0300', '00110001', '000000', '000000', '000000', '00', '000000', '000000', '000000', '00',
-        #                      '0000',
-        #                      '0000', ['', '', ''])
-        #     send_response(client, r)
 
         elif (protocol_name == 'time'):
             r = answer_time(packet_list)
@@ -399,7 +399,8 @@ def answer_login(client, query):
     crc_code = crc_itu.crcb(i=crc_bytes).hex()
     print("登录包crc-response:", crc_code)
 
-    r = hex_dict['start'] + hex_dict['start'] + packet_len + protocol + msg_id + crc_code + hex_dict['stop_1'] + hex_dict['stop_2']
+    r = hex_dict['start'] + hex_dict['start'] + packet_len + protocol + msg_id + crc_code + hex_dict['stop_1'] + \
+        hex_dict['stop_2']
     print("协议号：01，server to device response：", r)
     return r
 
@@ -480,7 +481,8 @@ def answer_heartbeat(client, query):
     print("CRC校验结果:", crc_code)
     # 心跳包回复
 
-    r = (hex_dict['start'] + hex_dict['start'] + packet_len + protocol + msg_id + crc_code + hex_dict['stop_1'] + hex_dict['stop_2'])
+    r = (hex_dict['start'] + hex_dict['start'] + packet_len + protocol + msg_id + crc_code + hex_dict['stop_1'] +
+         hex_dict['stop_2'])
 
     print("心跳包回复：", r)
 
@@ -499,7 +501,7 @@ def answer_gps(client, query):
     protocol = '22'
 
     # 当前时间
-    print("Gps定位包")
+    location_logger.info("Gps定位包")
     # date_now = ''.join([format(int(x, base=16), '02d') for x in query[2:8]])
     # print("定位包反馈当前时间：", date_now)
     # gps_data_length = int(query[8][0], base=16)
@@ -507,14 +509,15 @@ def answer_gps(client, query):
 
     gps_latitude = int(''.join(query[9:13]), base=16) / (30000 * 60)
     gps_longitude = int(''.join(query[13:17]), base=16) / (30000 * 60)
-    print("经纬度：", gps_latitude, gps_longitude)
+    location_logger.info("经纬度：{0}, {1}".format(gps_latitude, gps_longitude))
 
     # Speed is on the next byte
     gps_speed = int(query[17], base=16)
-    print("当前速度：", gps_speed)
+    location_logger.info("当前速度：{0}".format(gps_speed))
     # Last two bytes contain flags in binary that will be interpreted
     gps_flags = format(int(''.join(query[18:20]), base=16), '0>16b')
-    print("gps_flags:", gps_flags)
+    location_logger.info("gps_flags:{0}".format(gps_flags))
+
     position_is_valid = gps_flags[3]
     # Flip sign of GPS latitude if South, longitude if West
     if (gps_flags[4] == '1'):
@@ -523,8 +526,8 @@ def answer_gps(client, query):
         gps_longitude = -gps_longitude
     gps_heading = int(''.join(gps_flags[6:]), base=2)
 
-    print("gps_heading:", gps_heading, gps_latitude, gps_longitude)
-    print("全局imei:", addresses[client]['imei'])
+    location_logger.info("gps_heading:{0}, {1}, {2}".format(gps_heading, gps_latitude, gps_longitude))
+    location_logger.info("全局imei:{0}".format(addresses[client]['imei']))
 
     locations = str(gps_latitude) + ',' + str(gps_longitude)
 
@@ -532,12 +535,16 @@ def answer_gps(client, query):
 
     gpsdata = {"imei": addresses[client]['imei'], "gpstype": "gps", "lat": gps_latitude, "lon": gps_longitude,
                "address": addresse}
-    print("*" * 20)
-    print(gpsdata)
+    location_logger.info("gpsdata".join('*' * 20))
+    location_logger.info(str(gpsdata))
 
     # 线上环境使用，调用PLV函数，将GPS定位数据插入表中
-    # insert_loaction(gpsdata)
-    LOGGER('info', 'gps-locations.txt', addresses[client]['address'][0], addresses[client]['imei'], 'IN', gpsdata)
+    try:
+        insert_loaction(gpsdata)
+    except Exception as e:
+        location_logger.error(e)
+
+    location_logger.info("".join([addresses[client]['address'][0], addresses[client]['imei'], 'IN', str(gpsdata)]))
 
     return None
 
@@ -545,7 +552,7 @@ def answer_gps(client, query):
 def baidugps(location):
     url = BAIDU_API_INFO['url']
     data = {
-        "ak":BAIDU_API_INFO['ak'],
+        "ak": BAIDU_API_INFO['ak'],
         "coordtype": "wgs84ll",
         "output": "json",
         "location": location,
@@ -558,7 +565,7 @@ def baidugps(location):
         return resp['result']['formatted_address']
 
     except Exception as e:
-        print(e)
+        server_logger.error(e)
 
 
 def insert_loaction(gpsdata):
@@ -580,9 +587,9 @@ def insert_loaction(gpsdata):
         resp = req.json()
         print(resp)
         if resp['result']['message'][0]["code"] == 1:
-            print("定位数据插入成功！")
+            location_logger.info("定位数据插入成功！")
     except Exception as e:
-        print(e)
+        location_logger.error(e)
 
 
 # 基站定位包，不需要回复
@@ -607,9 +614,12 @@ def answer_lbs_base_station_msg(client, query):
 
     print("*" * 20)
     print(lbsdata)
-    LOGGER('info', 'gps-locations.txt', addresses[client]['address'][0], addresses[client]['imei'], 'IN', lbsdata)
+    location_logger.info("".join([addresses[client]['address'][0], '\t', addresses[client]['imei'], '\t', 'IN', '\t', str(lbsdata)]))
     # 定位类型:基站定位
-    # insert_loaction(lbsdata)
+    try:
+        insert_loaction(lbsdata)
+    except Exception as e:
+        location_logger.error(e)
 
     return None
 
@@ -637,7 +647,13 @@ def answer_lbs_alarm(client, query):
     print("*" * 20)
     print(lbsdata)
 
-    LOGGER('info', 'gps-locations.txt', addresses[client]['address'][0], addresses[client]['imei'], 'IN', lbsdata)
+    try:
+        insert_loaction(lbsdata)
+    except Exception as e:
+        location_logger.error(e)
+
+    location_logger.info("".join([addresses[client]['address'][0], '\t', addresses[client]['imei'], '\t', 'IN', '\t', str(lbsdata)]))
+
     return None
 
 
@@ -681,7 +697,8 @@ def answer_time(query):
     response = get_hexified_datetime(truncatedYear=False)
 
     # Build response
-    r = make_content_response(hex_dict['start'] + hex_dict['start'], protocol, response, hex_dict['stop_1'] + hex_dict['stop_2'])
+    r = make_content_response(hex_dict['start'] + hex_dict['start'], protocol, response,
+                              hex_dict['stop_1'] + hex_dict['stop_2'])
     return (r)
 
 
@@ -723,7 +740,8 @@ def online_command():
     print("***", packet_len_int, "***", packet_len, "***", msg)
     print("在线指令crc校验结果: ", crc_code)
 
-    r = hex_dict['start'] + hex_dict['start'] + packet_len + protocol + msg + msg_id + crc_code + hex_dict['stop_1'] + hex_dict['stop_2']
+    r = hex_dict['start'] + hex_dict['start'] + packet_len + protocol + msg + msg_id + crc_code + hex_dict['stop_1'] + \
+        hex_dict['stop_2']
     print("r", r)
     # M = 'VERSION#'
     # r = '787812800c0000000056455253494f4e23000164a50D0A'
@@ -746,7 +764,8 @@ def answer_upload_interval(client, query):
     # Response is new upload interval reported by device (HEX formatted, no need to alter it)
     response = ''.join(query[2:4])
 
-    r = make_content_response(hex_dict['start'] + hex_dict['start'], protocol, response, hex_dict['stop_1'] + hex_dict['stop_2'])
+    r = make_content_response(hex_dict['start'] + hex_dict['start'], protocol, response,
+                              hex_dict['stop_1'] + hex_dict['stop_2'])
     return (r)
 
 
@@ -777,6 +796,7 @@ ADDR = (HOST, PORT)
 
 # Initialize socket
 SERVER = socket(AF_INET, SOCK_STREAM)
+SERVER.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
 SERVER.bind(ADDR)
 
 # Store client data into dictionaries
@@ -785,7 +805,7 @@ positions = {}
 
 if __name__ == '__main__':
     SERVER.listen(5)
-    print("Waiting for connection...")
+    server_logger.info("Waiting for connection...")
     ACCEPT_THREAD = Thread(target=accept_incoming_connections)
     ACCEPT_THREAD.start()
     ACCEPT_THREAD.join()
