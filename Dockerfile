@@ -11,5 +11,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 USER gpstcp
 
 EXPOSE 5060
-CMD ["python", "gps-server.py"]
+CMD ["python", "-u", "gps-server.py"]
 
